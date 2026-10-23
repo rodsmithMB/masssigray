@@ -17,8 +17,8 @@ Install elsewhere with `pip install -e ".[test]"`; run tests with `pytest`.
 
 | Tab | Purpose |
 |---|---|
-| Transmission pellet | Optimal mg of sample and matrix under a pellet rule (minimum total mass, fixed total mass, or minimum thickness), with caps on edge step and total mu*t. Dilution recipe when the sample mass is too small to weigh. Check masses you actually weighed. |
-| Fluorescence | Signal, self-absorption (EXAFS amplitude retention) and noise; searches sample and matrix mass together. |
+| Transmission pellet | Optimal mg of sample and matrix under a pellet rule (minimum total mass, fixed total mass, minimum thickness, or minimum matrix mass to bind the pellet), with caps on edge step and total mu*t. Dilution recipe when the sample mass is too small to weigh. Check masses you actually weighed. Counting time (longer dwells vs repeated scans) to reach a target rms σ(k^w chi). |
+| Fluorescence | Signal, self-absorption (EXAFS amplitude retention) and noise; searches sample and matrix mass together; counting time for a target noise. |
 | Foil / film | Optimal thickness for matrix-free samples of known density. |
 | Detector calibration | Photon-transfer fit to repeated I0 scans at several dwell times: gain, read noise, dark current, source instability, scan-to-scan drift. |
 | Method | Equations and limitations. |

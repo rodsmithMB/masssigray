@@ -26,6 +26,7 @@ from .detector import DetectorModel
 from .flux import FluxSpectrum
 from .materials import Material
 from .scan import ScanPlan
+from .timing import TimeEstimate, estimate
 from .transmission import PelletConstraint, dilution_recipe, matrix_mass, pellet_thickness_mm
 from .xray import edge_energy, edge_step_mu_rho, k_of_E, mu_rho
 
@@ -227,3 +228,9 @@ def optimize(setup: FluorescenceSetup, c: PelletConstraint | None = None,
         chi_noise_rms=float(e1["chi"][0]), line_energy=float(model.E_f), binding=binding,
         warnings=warnings, spectra=spectra, dilution=dil,
         curve=dict(m_sample=ms, best_score=best_per, retention=ret, objective=s.objective))
+
+
+def time_for_target(setup: FluorescenceSetup, m_sample_mg: float, m_matrix_mg: float,
+                    target: float, overhead_s: float = 0.0) -> TimeEstimate:
+    """Counting time to reach rms sigma(k^w chi) = target at the given masses (see timing.py)."""
+    return estimate(_FModel(setup), setup.scan, m_sample_mg, m_matrix_mg, target, overhead_s)

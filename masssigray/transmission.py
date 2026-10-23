@@ -25,9 +25,10 @@ from .detector import DetectorModel, sigma_mut
 from .flux import FluxSpectrum
 from .materials import Material
 from .scan import ScanPlan
+from .timing import TimeEstimate, estimate
 from .xray import edge_energy, edge_step_mu_rho, interfering_edges, k_of_E, mu_rho
 
-CONSTRAINT_MODES = ("min_total_mass", "fixed_total_mass", "min_thickness", "none")
+CONSTRAINT_MODES = ("min_total_mass", "fixed_total_mass", "min_thickness", "min_matrix_mass", "none")
 
 
 @dataclass
@@ -40,6 +41,7 @@ class PelletConstraint:
     max_edge_step: float | None = 1.5
     max_mut: float | None = 4.0  # total mu*t at any scan energy
     min_weighable_mg: float = 2.0
+    min_matrix_mg: float = 50.0  # matrix needed to bind the pellet, for "min_matrix_mass"
 
     def __post_init__(self):
         if self.mode not in CONSTRAINT_MODES:
@@ -159,6 +161,8 @@ def matrix_mass(m_s, setup: TransmissionSetup, c: PelletConstraint):
     elif c.mode == "fixed_total_mass":
         mm = c.total_mass_mg - m_s
         mm = np.where(mm >= by_fraction - 1e-12, mm, np.nan)
+    elif c.mode == "min_matrix_mass":
+        mm = np.maximum(c.min_matrix_mg, by_fraction)
     else:  # min_thickness
         rho_s, rho_m = setup.sample.density, setup.matrix.density
         if not (rho_s and rho_m):
@@ -318,6 +322,12 @@ def evaluate_masses(setup: TransmissionSetup, m_sample_mg: float, m_matrix_mg: f
         notes.append(f"mu*t exceeds the cap of {c.max_mut:g} in part of the scan.")
     return _describe(setup, c, model, m_sample_mg, m_matrix_mg, ev, "user masses",
                      not notes, notes)
+
+
+def time_for_target(setup: TransmissionSetup, m_sample_mg: float, m_matrix_mg: float,
+                    target: float, overhead_s: float = 0.0) -> TimeEstimate:
+    """Counting time to reach rms sigma(k^w chi) = target at the given masses (see timing.py)."""
+    return estimate(_Model(setup), setup.scan, m_sample_mg, m_matrix_mg, target, overhead_s)
 
 
 def foil_setup(material: Material, absorber: str, edge: str, flux: FluxSpectrum,

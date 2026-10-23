@@ -21,7 +21,8 @@ from masssigray.flux import FluxSpectrum, example_flux_csv, load_flux, read_tabl
 from masssigray.materials import MATRIX_PRESETS, Material, matrix_preset
 from masssigray.scan import ScanPlan
 from masssigray.transmission import (CONSTRAINT_MODES, PelletConstraint, TransmissionSetup,
-                                     areal_to_thickness_um, evaluate_masses, foil_setup, optimize)
+                                     areal_to_thickness_um, evaluate_masses, foil_setup, optimize,
+                                     time_for_target)
 from masssigray.xray import element_edges
 
 # Categorical slots 1-3 of the validated reference palette (dataviz skill)
@@ -46,6 +47,19 @@ def fmt(x, unit="", digits=3):
     if x is None or (isinstance(x, float) and not np.isfinite(x)):
         return "n/a"
     return f"{x:.{digits}g}{(' ' + unit) if unit else ''}"
+
+
+def fmt_time(s):
+    if s is None:
+        return "unreachable"
+    if s < 120:
+        return f"{s:.0f} s"
+    if s < 7200:
+        return f"{s / 60:.1f} min"
+    return f"{s / 3600:.1f} h"
+
+
+INV_ANGSTROM = {0: "", 1: " (Å⁻¹)", 2: " (Å⁻²)", 3: " (Å⁻³)"}
 
 
 def show_warnings(warnings):
@@ -140,8 +154,8 @@ sample_txt = c1.text_input("Sample composition", "CuO",
                            help="Formula (Fe2O3, Ni0.5Co0.5(OH)2) or wt% mixture: 'Pt:1, Al2O3' "
                                 "(one component may omit its wt% and takes the balance).")
 sample_rho = c2.number_input("Sample density (g/cm³, 0 = unknown)", 0.0, 30.0, 6.31)
-die_mm = c3.number_input("Pellet diameter (mm)", 1.0, 100.0, 13.0)
-area = np.pi * (die_mm / 20.0) ** 2
+area = c3.number_input("Pellet area (cm²)", 0.01, 100.0, 1.0, format="%.3g",
+                       help="Area the sample is pressed over, any shape. A 13 mm round die is 1.33 cm².")
 sample = parse_material(sample_txt, sample_rho, "Sample")
 
 c1, c2, c3, c4 = st.columns([1, 1, 2, 1])
@@ -208,10 +222,14 @@ def constraint_inputs(prefix, with_matrix=True):
     c1, c2, c3, c4 = st.columns(4)
     if with_matrix:
         labels = {"min_total_mass": "Minimum total mass", "fixed_total_mass": "Fixed total mass",
-                  "min_thickness": "Minimum thickness", "none": "No pellet constraint"}
+                  "min_thickness": "Minimum thickness", "min_matrix_mass": "Minimum matrix mass",
+                  "none": "No pellet constraint"}
         mode = c1.selectbox("Pellet rule", CONSTRAINT_MODES, format_func=labels.get, key=prefix + "mode")
         total = c1.number_input("Total mass (mg)", 1.0, 5000.0, 100.0, key=prefix + "tot",
                                 disabled=mode not in ("min_total_mass", "fixed_total_mass"))
+        mmin = c1.number_input("Min matrix mass (mg)", 0.0, 5000.0, 50.0, key=prefix + "mmin",
+                               disabled=mode != "min_matrix_mass",
+                               help="Matrix needed to bind the pellet, regardless of sample mass.")
         tmin = c2.number_input("Min thickness (mm)", 0.01, 20.0, 0.5, key=prefix + "tmin",
                                disabled=mode != "min_thickness")
         pack = c2.number_input("Packing fraction", 0.1, 1.0, 0.7, key=prefix + "pack",
@@ -219,11 +237,12 @@ def constraint_inputs(prefix, with_matrix=True):
         fmin = c3.number_input("Min matrix wt%", 0.0, 99.0, 0.0, key=prefix + "fmin") / 100
         weigh = c3.number_input("Min weighable mass (mg)", 0.0, 100.0, 2.0, key=prefix + "weigh")
     else:
-        mode, total, tmin, pack, fmin, weigh = "none", 100.0, 0.5, 1.0, 0.0, 0.0
+        mode, total, tmin, pack, fmin, weigh, mmin = "none", 100.0, 0.5, 1.0, 0.0, 0.0, 0.0
     step_cap = c4.number_input("Max edge step Δμt", 0.0, 10.0, 1.5, key=prefix + "step",
                                help="0 disables. Above ~1.5 thickness effects grow.")
     mut_cap = c4.number_input("Max total μt", 0.0, 20.0, 4.0, key=prefix + "mut", help="0 disables.")
-    return PelletConstraint(mode, total, tmin, pack, fmin, step_cap or None, mut_cap or None, weigh)
+    return PelletConstraint(mode, total, tmin, pack, fmin, step_cap or None, mut_cap or None, weigh,
+                            min_matrix_mg=mmin)
 
 
 def plot_optimization(curve, plan, xlabel="Sample mass (mg)", mark=None):
@@ -252,7 +271,42 @@ def plot_optimization(curve, plan, xlabel="Sample mass (mg)", mark=None):
     return fig_layout(fig, height=520, title="Objective and constraints vs loading")
 
 
-def spectrum_section(plan, key):
+def time_section(time_fn, setup, plan, kw, key):
+    with st.expander(f"Counting time for a target rms σ(k^{kw}χ)", expanded=True):
+        a, b = st.columns(2)
+        default = {0: 0.002, 1: 0.02, 2: 0.1, 3: 1.0}[kw]
+        target = a.number_input(f"Target rms σ(k^{kw}χ) per point{INV_ANGSTROM[kw]}", 0.0, 1e6, default,
+                                format="%.3g", key=f"{key}target{kw}",
+                                help="Compare with the k^w χ amplitude you expect over the k range.")
+        overhead = b.number_input("Overhead per point (s)", 0.0, 60.0, 0.0, key=key + "ovh",
+                                  help="Motor move and readout; paid once per point in every scan.")
+        if target <= 0:
+            return
+        try:
+            te = time_fn(setup, plan.m_sample_mg, plan.m_matrix_mg, target, overhead)
+        except ValueError as err:
+            st.info(str(err))
+            return
+        v = st.columns(4)
+        v[0].metric("One scan pair (planned dwells)", fmt_time(te.time_one_s),
+                    help=f"rms σ = {te.sigma_one:.3g}")
+        v[1].metric("Longer dwells", fmt_time(te.time_dwell_s),
+                    help=None if te.dwell_factor is None else f"all dwells × {te.dwell_factor:.3g}")
+        v[2].metric("Repeated scans", fmt_time(te.time_scans_s), help=f"{te.n_scans} scan pairs averaged")
+        v[3].metric("Floor for long dwells", fmt(te.floor),
+                    help="Set by source instability, which longer dwells do not average out.")
+        msg = (f"One sample + I₀ scan gives rms σ = {te.sigma_one:.3g}. Average **{te.n_scans}** "
+               f"scan pairs ({fmt_time(te.time_scans_s)})")
+        if te.dwell_factor is None:
+            msg += (f"; longer dwells alone cannot reach {target:g} because source instability "
+                    f"sets a floor of {te.floor:.3g}, so repeat scans instead.")
+        else:
+            msg += f", or multiply every dwell by {te.dwell_factor:.3g} ({fmt_time(te.time_dwell_s)})."
+        st.caption(msg + " Times include the I₀ scan and the per-point overhead, but not "
+                   "sample changes or scan-to-scan drift.")
+
+
+def spectrum_section(plan, key, kw=2):
     sp = plan.spectra
     with st.expander("Reference spectrum for peak absorbance (optional)"):
         st.caption("Upload a XANES/EXAFS of a similar compound (energy, μ). It is normalized and "
@@ -296,10 +350,10 @@ def spectrum_section(plan, key):
     k = sp["k"]
     m = (k >= 2) & (sp["E"] > E0) & np.isfinite(sp["sigma_chi"])
     if m.any():
-        fig = go.Figure(go.Scatter(x=k[m], y=sp["sigma_chi"][m] * k[m] ** 2, name="σ(k²χ)",
+        fig = go.Figure(go.Scatter(x=k[m], y=sp["sigma_chi"][m] * k[m] ** kw, name=f"σ(k^{kw}χ)",
                                    line=dict(color=C1, width=2), hovertemplate="%{y:.3g}"))
         fig.update_xaxes(title_text="k (Å⁻¹)")
-        fig.update_yaxes(title_text="σ of k²χ(k) per point (Å⁻²)", type="log")
+        fig.update_yaxes(title_text=f"σ of k^{kw}χ(k) per point{INV_ANGSTROM[kw]}", type="log")
         st.plotly_chart(fig_layout(fig, height=300, title="EXAFS noise per point"),
                         width="stretch", key=key + "chi")
     out = pd.DataFrame(dict(energy_eV=sp["E"], k=k, dwell_s=sp["dwell"], I0_rate=sp["rate"],
@@ -311,7 +365,7 @@ def spectrum_section(plan, key):
 
 
 def recipe_box(plan):
-    lines = [f"Pellet: {die_mm:g} mm diameter ({area:.3f} cm²)",
+    lines = [f"Pellet: {area:.3g} cm²",
              f"  {sample.label}: {plan.m_sample_mg:.2f} mg",
              f"  {matrix.name if matrix else 'no matrix'}: {plan.m_matrix_mg:.2f} mg",
              f"  total: {plan.total_mg:.2f} mg  ({plan.sample_wt_pct:.2f} wt% sample)"]
@@ -347,6 +401,8 @@ with tab_t:
                f"Max μt in scan {plan.mut_max:.3g}.")
     recipe_box(plan)
     show_warnings(plan.warnings)
+    spectrum_section(plan, "t_", kw)
+    time_section(time_for_target, setup, plan, kw, "t_")
 
     with st.expander("Check masses you choose or actually weighed"):
         u1, u2 = st.columns(2)
@@ -363,7 +419,6 @@ with tab_t:
             show_warnings(up.warnings)
 
     st.plotly_chart(plot_optimization(plan.curve, plan), width="stretch", key="t_opt")
-    spectrum_section(plan, "t_")
 
 
 # ------------------------------------------------------------------ fluorescence
@@ -401,6 +456,7 @@ with tab_f:
         st.caption(f"Line energy {fp.line_energy:.0f} eV. Limited by: **{fp.binding}**.")
         recipe_box(fp)
         show_warnings(fp.warnings)
+        time_section(fluo.time_for_target, fs, fp, kw_f, "f_")
 
         cv = fp.curve
         fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.06)
@@ -422,10 +478,11 @@ with tab_f:
         fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.08)
         fig.add_trace(go.Scatter(x=sp["k"][mk], y=sp["R"][mk], name="retention",
                                  line=dict(color=C2, width=2), hovertemplate="%{y:.3f}"), 1, 1)
-        fig.add_trace(go.Scatter(x=sp["k"][mk], y=sp["sigma_chi"][mk] * sp["k"][mk] ** 2, name="σ(k²χ)",
+        fig.add_trace(go.Scatter(x=sp["k"][mk], y=sp["sigma_chi"][mk] * sp["k"][mk] ** kw_f,
+                                 name=f"σ(k^{kw_f}χ)",
                                  line=dict(color=C1, width=2), hovertemplate="%{y:.3g}"), 2, 1)
         fig.update_yaxes(title_text="retention", row=1, col=1)
-        fig.update_yaxes(title_text="σ(k²χ) per point", type="log", row=2, col=1)
+        fig.update_yaxes(title_text=f"σ(k^{kw_f}χ) per point", type="log", row=2, col=1)
         fig.update_xaxes(title_text="k (Å⁻¹)", row=2, col=1)
         st.plotly_chart(fig_layout(fig, height=420, title="Self-absorption and noise vs k"),
                         width="stretch", key="f_k")
@@ -456,7 +513,7 @@ with tab_foil:
     m[2].metric("Edge step Δμt", fmt(fplan.edge_step))
     m[3].metric("μt above edge", fmt(fplan.mut_above))
     m[4].metric("Edge SNR per point", fmt(fplan.snr_edge))
-    st.caption(f"Limited by: **{fplan.binding}**. On your {die_mm:g} mm area that is "
+    st.caption(f"Limited by: **{fplan.binding}**. On your {area:.3g} cm² area that is "
                f"{fplan.m_sample_mg * area:.3g} mg.")
     show_warnings(fplan.warnings)
     with st.expander("Check a thickness you have"):
@@ -578,6 +635,12 @@ effects and starved detector counts.
 $I_f/I_0 = \frac{\Omega}{4\pi}\eta Y \frac{a/\sin\theta_{in}}{X}(1-e^{-X})$ with
 $X = \tau/\sin\theta_{in} + \tau_f/\sin\theta_{out}$. The EXAFS amplitude retention
 $R = \partial\ln I_f/\partial\ln a$ measures self-absorption.
+
+**Counting time.** For a target rms σ(kʷχ), two options are compared at the planned masses.
+Averaging N independent scan pairs divides every noise term by √N. Multiplying every dwell by f
+reduces shot, dark and read noise roughly as 1/√f, but not source instability, which sets a
+floor (≈ √2·ε/Δμt per point in transmission). If the target is below that floor, repeat scans instead. A fixed
+overhead per point is charged once per point in every scan.
 
 **Limitations.** Tabulated cross sections have no white line or EXAFS: load a reference
 spectrum for peak values. Pellet inhomogeneity, harmonics, and particle-size effects are not

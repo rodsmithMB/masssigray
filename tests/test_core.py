@@ -1,4 +1,5 @@
 import io
+import math
 
 import numpy as np
 import pytest
@@ -10,7 +11,8 @@ from masssigray.flux import FluxSpectrum, example_flux_csv, load_flux
 from masssigray.materials import Material, matrix_preset, parse_mixture
 from masssigray.scan import ScanPlan
 from masssigray.transmission import (PelletConstraint, TransmissionSetup, dilution_recipe,
-                                     evaluate_masses, foil_setup, matrix_mass, optimize)
+                                     evaluate_masses, foil_setup, matrix_mass, optimize,
+                                     time_for_target)
 from masssigray.xray import edge_energy, edge_step_mu_rho, mu_rho
 
 AREA = np.pi * 0.65**2  # 13 mm die
@@ -70,6 +72,18 @@ def test_matrix_rules():
     thick = matrix_mass(np.array([0.0]), s, PelletConstraint("min_thickness", min_thickness_mm=1.0,
                                                              packing_fraction=0.7))
     assert thick[0] == pytest.approx(1.5e3 * 0.7 * AREA * 0.1, rel=1e-6)
+    binder = matrix_mass(ms, s, PelletConstraint("min_matrix_mass", min_matrix_mg=40))
+    assert np.allclose(binder, [40, 40])
+    binder = matrix_mass(ms, s, PelletConstraint("min_matrix_mass", min_matrix_mg=40,
+                                                 min_matrix_fraction=0.5))
+    assert np.allclose(binder, [40, 150])
+
+
+def test_min_matrix_mass_optimize():
+    s = TransmissionSetup(Material.from_formula("CuO", 6.31), matrix_preset("Cellulose"), AREA,
+                          "Cu", "K", FLAT)
+    p = optimize(s, PelletConstraint("min_matrix_mass", min_matrix_mg=60))
+    assert p.m_matrix_mg == pytest.approx(60)
 
 
 def test_dilute_sample_not_matrix_limited():
@@ -164,3 +178,35 @@ def test_flux_loader_and_reference():
     assert e0 == pytest.approx(8980, abs=3)
     assert norm[-1] == pytest.approx(1.0, abs=0.05)
     assert norm.max() > 1.3
+
+
+def test_time_for_target_poisson_and_floor():
+    s = TransmissionSetup(Material.from_formula("CuO", 6.31), matrix_preset("Cellulose"), AREA,
+                          "Cu", "K", FLAT, objective="exafs", k_weight=3)
+    p = optimize(s)
+    target = p.chi_noise_rms / 3
+    te = time_for_target(s, p.m_sample_mg, p.m_matrix_mg, target)
+    assert te.sigma_one == pytest.approx(p.chi_noise_rms)
+    assert te.n_scans == 9  # pure counting noise: sigma ~ 1/sqrt(N)
+    assert te.dwell_factor == pytest.approx(9, rel=1e-3)
+    assert te.time_dwell_s == pytest.approx(te.time_scans_s, rel=1e-3)
+    assert te.time_one_s == pytest.approx(sum(s.scan.total_time()))
+
+    s.detector = DetectorModel(instability=0.05)  # floor ~ sqrt(2)*0.05 in mu*t per point
+    te = time_for_target(s, p.m_sample_mg, p.m_matrix_mg, target)
+    assert te.floor > target and te.dwell_factor is None and te.time_dwell_s is None
+    assert te.n_scans == math.ceil((te.sigma_one / target) ** 2)
+
+    # overhead is paid per point per scan, so repeats cost more than longer dwells
+    te = time_for_target(s, p.m_sample_mg, p.m_matrix_mg, te.sigma_one / 2, overhead_s=0.5)
+    n_pts = len(s.scan.grid()[0])
+    assert te.time_one_s == pytest.approx(sum(s.scan.total_time()) + 2 * n_pts * 0.5)
+
+
+def test_fluorescence_time_for_target():
+    setup = fl.FluorescenceSetup(Material.from_text("Pt:1, Al2O3", 3.95), matrix_preset("Cellulose"),
+                                 AREA, "Pt", "L3", FLAT, k_weight=3)
+    p = fl.optimize(setup)
+    te = fl.time_for_target(setup, p.m_sample_mg, p.m_matrix_mg, p.chi_noise_rms / 2)
+    assert te.n_scans == 4
+    assert te.dwell_factor == pytest.approx(4, rel=1e-3)
