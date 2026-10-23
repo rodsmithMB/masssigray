@@ -1,0 +1,13 @@
+Metadata-Version: 2.4
+Name: masssigray
+Version: 0.1.0
+Summary: Sample planning for lab-based XAS: pellet masses, foils, fluorescence, noise from measured I0
+Requires-Python: >=3.10
+Requires-Dist: numpy
+Requires-Dist: scipy
+Requires-Dist: pandas
+Requires-Dist: xraydb>=4.5
+Requires-Dist: plotly
+Requires-Dist: streamlit
+Provides-Extra: test
+Requires-Dist: pytest; extra == "test"

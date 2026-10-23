@@ -1,0 +1,2 @@
+[console_scripts]
+masssigray-app = masssigray.cli:run_app

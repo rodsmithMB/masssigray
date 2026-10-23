@@ -1,0 +1,9 @@
+numpy
+scipy
+pandas
+xraydb>=4.5
+plotly
+streamlit
+
+[test]
+pytest

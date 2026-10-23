@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "masssigray"
+version = "0.1.0"
+description = "Sample planning for lab-based XAS: pellet masses, foils, fluorescence, noise from measured I0"
+requires-python = ">=3.10"
+dependencies = ["numpy", "scipy", "pandas", "xraydb>=4.5", "plotly", "streamlit"]
+
+[project.optional-dependencies]
+test = ["pytest"]
+
+[project.scripts]
+masssigray-app = "masssigray.cli:run_app"
+
+[tool.setuptools.packages.find]
+include = ["masssigray*"]
