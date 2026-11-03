@@ -1,3 +1,30 @@
+# ================================================================
+# Web app (web/): TypeScript + Vite + Vitest
+# ================================================================
+
+# Dependencies (restored with `npm ci` from package-lock.json, which is tracked)
+node_modules/
+
+# Build output (`npm run build`); upload it, don't commit it
+web/dist/
+*.local
+
+# Tool caches
+.vite/
+.vitest/
+*.tsbuildinfo
+.eslintcache
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# ================================================================
+# Python reference implementation (frozen at tag python-final)
+# ================================================================
+
 # Byte-compiled / optimized files
 __pycache__/
 *.py[cod]

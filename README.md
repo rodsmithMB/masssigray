@@ -1,8 +1,8 @@
 # massSigray
 
 > **Frozen.** This Python/Streamlit version is frozen at the git tag `python-final` and kept
-> as the reference implementation. Development continues in the TypeScript web port (`web/`),
-> which is checked against this code.
+> as the reference implementation. Development continues in the TypeScript web port
+> ([`web/`](web/README.md)), which is tested against results from this code.
 
 Sample planning for lab-based XAS. Given a sample composition, a host matrix, the
 absorption edge and the pellet area, it finds the sample and matrix masses that give
