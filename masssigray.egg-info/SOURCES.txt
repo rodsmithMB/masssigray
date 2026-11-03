@@ -9,6 +9,7 @@ masssigray/flux.py
 masssigray/materials.py
 masssigray/scan.py
 masssigray/simulate.py
+masssigray/timing.py
 masssigray/transmission.py
 masssigray/xray.py
 masssigray.egg-info/PKG-INFO
@@ -17,4 +18,5 @@ masssigray.egg-info/dependency_links.txt
 masssigray.egg-info/entry_points.txt
 masssigray.egg-info/requires.txt
 masssigray.egg-info/top_level.txt
+masssigray/data/i0_reference.csv
 tests/test_core.py

@@ -17,3 +17,6 @@ masssigray-app = "masssigray.cli:run_app"
 
 [tool.setuptools.packages.find]
 include = ["masssigray*"]
+
+[tool.setuptools.package-data]
+masssigray = ["data/*.csv"]

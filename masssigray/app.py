@@ -17,13 +17,14 @@ from plotly.subplots import make_subplots
 from masssigray import fluorescence as fluo
 from masssigray import simulate
 from masssigray.detector import DetectorModel, Scan, calibrate, simulate_scans
-from masssigray.flux import FluxSpectrum, example_flux_csv, load_flux, read_table
+from masssigray.flux import (FluxSpectrum, example_flux_csv, instrument_flux, instrument_segments,
+                             instrument_window, load_flux, load_reference_scan, read_table)
 from masssigray.materials import MATRIX_PRESETS, Material, matrix_preset
 from masssigray.scan import ScanPlan
 from masssigray.transmission import (CONSTRAINT_MODES, PelletConstraint, TransmissionSetup,
                                      areal_to_thickness_um, evaluate_masses, foil_setup, optimize,
                                      time_for_target)
-from masssigray.xray import element_edges
+from masssigray.xray import E_of_k, element_edges, k_of_E
 
 # Categorical slots 1-3 of the validated reference palette (dataviz skill)
 C1, C2, C3 = "#2a78d6", "#eb6834", "#1baf7a"
@@ -85,10 +86,39 @@ def edges_for(element):
 st.sidebar.title("Instrument")
 
 with st.sidebar.expander("Incident flux I₀(E)", expanded=True):
-    flux_src = st.radio("Source", ["Upload measured I₀", "Constant rate", "Synthetic example"],
-                        index=1, key="flux_src")
+    flux_src = st.radio("Source", ["Instrument (built-in)", "Upload spectrometer export",
+                                   "Upload measured I₀", "Constant rate", "Synthetic example"],
+                        index=0, key="flux_src")
     flux = None
-    if flux_src == "Upload measured I₀":
+    instr = None  # built-in I0 window name ("" for the smoothed curve)
+    cal = st.session_state.get("calibration")
+    default_gain = float(cal.gain) if cal else 1.0
+    gain_help = ("Detector units (ADU) per effective count: 1 for a photon counter, else the gain "
+                 "from the Detector calibration tab.")
+    if flux_src in ("Instrument (built-in)", "Upload spectrometer export"):
+        st.caption("I₀ is the sum of the reference pixels (Algn R 1 … R n) per point.")
+        if flux_src == "Instrument (built-in)":
+            segs = instrument_segments()
+            wchoice = st.selectbox("I₀ curve", ["Smoothed, full span"] + list(segs),
+                                   format_func=lambda w: w if w not in segs else
+                                   f"{w} window only: {segs[w][0][0]:.0f}-{segs[w][0][-1]:.0f} eV",
+                                   help="The smoothed curve joins all measured windows into one broad "
+                                        "estimate. A single window is the raw measurement over its range.")
+        else:
+            up = st.file_uploader("Spectrometer CSV export", key="i0_export")
+        dwell = st.number_input("Dwell per point of the reference scan (s)", 0.001, 1e5, 1.0,
+                                key="i0_dwell")
+        gain = st.number_input("Gain (ADU per effective count)", 1e-6, 1e6, default_gain,
+                               format="%.4g", help=gain_help, key="i0_gain")
+        if flux_src == "Instrument (built-in)":
+            instr = wchoice if wchoice in segs else ""
+            flux = instrument_flux(instr or None, dwell, gain)
+        elif up is not None:
+            try:
+                flux = load_reference_scan(io.BytesIO(up.getvalue()), dwell, gain, label=up.name)
+            except Exception as err:
+                st.error(f"Could not read export: {err}")
+    elif flux_src == "Upload measured I₀":
         up = st.file_uploader("I₀ file (columns: energy, rate or counts)", key="i0_file")
         if up is not None:
             try:
@@ -100,12 +130,8 @@ with st.sidebar.expander("Incident flux I₀(E)", expanded=True):
                 kind = st.radio("Values are", ["rate", "counts"], horizontal=True)
                 dwell = st.number_input("Dwell per point (s)", 0.001, 1e5, 1.0) if kind == "counts" else None
                 unit = st.radio("Energy unit", ["auto", "eV", "keV"], horizontal=True)
-                cal = st.session_state.get("calibration")
-                default_gain = float(cal.gain) if cal else 1.0
                 gain = st.number_input("Gain (detector units per effective count)", 1e-6, 1e6,
-                                       default_gain, format="%.4g",
-                                       help="1 for a photon counter. From the Detector calibration tab "
-                                            "for an integrating camera.")
+                                       default_gain, format="%.4g", help=gain_help)
                 flux = load_flux(io.BytesIO(up.getvalue()), cols.index(ecol), cols.index(vcol),
                                  kind, dwell, unit, gain, label=up.name)
             except Exception as err:
@@ -172,6 +198,13 @@ usable = [e for e in ("K", "L3", "L2", "L1", "M5") if e in edges and lo <= edges
 edge = c2.selectbox("Edge", edge_names, format_func=lambda e: f"{e} ({edges[e]:.0f} eV)",
                     index=edge_names.index(usable[0]) if usable else 0, key=f"edge_{absorber}")
 E0 = edges[edge]
+if instr is not None:
+    if instr and instrument_window(E0) != instr:
+        st.warning(f"The {instr} I₀ window does not contain the {absorber} {edge} edge "
+                   f"({E0:.0f} eV).", icon="⚠️")
+    st.caption(f"I₀: {flux.label}, {flux.energy[0]:.0f}-{flux.energy[-1]:.0f} eV"
+               + (f" (k up to {float(k_of_E(flux.energy[-1], E0)):.1f} Å⁻¹)."
+                  if E0 < flux.energy[-1] < E_of_k(20.0, E0) else "."))
 mat_choice = c3.selectbox("Matrix", list(MATRIX_PRESETS) + ["Custom", "None"], index=1)
 if mat_choice == "Custom":
     mt = c4.text_input("Matrix formula", "C6H10O5")
@@ -190,7 +223,10 @@ with st.expander(f"Scan plan around {absorber} {edge} = {E0:.0f} eV"):
     xs = s2.number_input("XANES start (eV rel.)", -500.0, 0.0, -30.0)
     xe = s2.number_input("XANES end (eV rel.)", 1.0, 500.0, 40.0)
     xstep = s2.number_input("XANES step (eV)", 0.05, 20.0, 0.5)
-    kmax = s3.number_input("k max (Å⁻¹, ≤ XANES end for none)", 0.0, 25.0, 12.0)
+    k_flux = float(k_of_E(flux.energy[-1], E0)) if flux.energy[-1] > E0 else 0.0
+    kmax_default = 12.0 if instr is None else round(min(12.0, max(k_flux - 0.05, 0.0)), 1)
+    kmax = s3.number_input("k max (Å⁻¹, ≤ XANES end for none)", 0.0, 25.0, kmax_default,
+                           help="Defaults to the end of the measured I₀ window when it is shorter.")
     kstep = s3.number_input("k step (Å⁻¹)", 0.01, 1.0, 0.05)
     dpre = s4.number_input("Dwell pre-edge (s)", 0.001, 1e4, 1.0)
     dx = s4.number_input("Dwell XANES (s)", 0.001, 1e4, 1.0)
@@ -550,7 +586,8 @@ shifts μt by a constant and does not add point-to-point noise.
     demo = st.checkbox("Use synthetic demo data instead", value=not files)
     scans = []
     if demo:
-        e = np.arange(8000, 10000, 5.0)
+        e = (np.arange(8000, 10000, 5.0) if flux_src == "Constant rate"
+             else np.linspace(flux.energy[0], flux.energy[-1], 400))
         scans = simulate_scans(lambda x: flux(x) / max(scale, 1e-12) if flux_src != "Constant rate"
                                else np.full_like(x, 2e4), e, rng=0)
         st.caption("Demo: gain 2.5 ADU/count, read noise 30 ADU, dark 50 ADU/s, 0.2 % instability, "

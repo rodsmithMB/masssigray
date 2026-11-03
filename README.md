@@ -1,5 +1,9 @@
 # massSigray
 
+> **Frozen.** This Python/Streamlit version is frozen at the git tag `python-final` and kept
+> as the reference implementation. Development continues in the TypeScript web port (`web/`),
+> which is checked against this code.
+
 Sample planning for lab-based XAS. Given a sample composition, a host matrix, the
 absorption edge and the pellet area, it finds the sample and matrix masses that give
 the best signal-to-noise. It uses tabulated cross sections (xraydb, Elam tables) and
@@ -29,6 +33,14 @@ realistic white-line (peak) absorbance.
 
 ## Inputs
 
+* **Built-in instrument I0** (default): reference scans of the lab spectrometer, one measured
+  window per element edge (V to Kr, 5.3 to 14.6 keV). I0 is the sum of the reference pixel
+  columns (`Algn R 1` ... `Algn R 100`) per point. By default the windows are joined into one
+  smoothed curve over the full span (log I0, 100 eV bin medians, gaps interpolated, 300 eV
+  Gaussian), a broad estimate within about ±15 % of each window; a single raw window can be
+  chosen instead. Set the reference-scan dwell per point and the detector gain. Rebuild after
+  new exports with `python scripts/build_i0_reference.py source/*.csv`.
+* **Spectrometer export**: upload one raw CSV export of that format directly.
 * **I0 file**: text/CSV with an energy column (eV or keV) and a rate (counts/s) or counts
   per point (give the dwell). Divide by the calibrated gain to get effective counts.
 * **Calibration scans**: one file per scan, energy + ROI-summed ADU; set dwell and
