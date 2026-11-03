@@ -7,7 +7,8 @@ import pytest
 from masssigray import fluorescence as fl
 from masssigray import simulate
 from masssigray.detector import DetectorModel, calibrate, sigma_mut, simulate_scans
-from masssigray.flux import FluxSpectrum, example_flux_csv, load_flux
+from masssigray.flux import (FluxSpectrum, example_flux_csv, instrument_flux, instrument_segments,
+                             load_flux, load_reference_scan, read_reference_scan)
 from masssigray.materials import Material, matrix_preset, parse_mixture
 from masssigray.scan import ScanPlan
 from masssigray.transmission import (PelletConstraint, TransmissionSetup, dilution_recipe,
@@ -210,3 +211,40 @@ def test_fluorescence_time_for_target():
     te = fl.time_for_target(setup, p.m_sample_mg, p.m_matrix_mg, p.chi_noise_rms / 2)
     assert te.n_scans == 4
     assert te.dwell_factor == pytest.approx(4, rel=1e-3)
+
+
+def _export(rows):
+    """A small spectrometer export: 3 reference pixels, 2 signal pixels."""
+    head = ("Number, Bragg Angle, Energy, Calibrated Angle, Calibrated Energy, Aln. Sum Reference, "
+            "Aln. Sum Signal, Absorption, Algn R 1, Algn R 2, Algn R 3, Algn S 1, Algn S 2, R I0, S I0")
+    return "\n".join([head] + rows)
+
+
+def test_reference_scan_sums_pixels():
+    text = _export([
+        "1, 30, 9000, 30, 9000.5, 0, 0, 0,,,,,, 0, 0",                       # start marker
+        "2, 30, 9001, 30, 9001.5, 6, 9, 0.1, 1, 2, 3, 4, 5, 0, 0",
+        "3, 30, 9002, 30, 9002.5, 15, 9, 0.1, 4, 5, 6, 4, 5, 0, 0",
+        "4, 30, 9003, 30, 9003.5, 0, 0, 0,,,,,, 0, 0"])                      # end marker
+    E, s = read_reference_scan(io.StringIO(text))
+    assert E.tolist() == [9001.5, 9002.5]          # calibrated energy, markers dropped
+    assert s.tolist() == [6.0, 15.0]               # R pixels only, not S or "R I0"
+    f = load_reference_scan(io.StringIO(text), dwell=2.0, gain=3.0)
+    assert f(9002.5) == pytest.approx(15 / 6)
+
+
+def test_instrument_windows_and_smooth():
+    segs = instrument_segments()
+    assert {"V", "Cu", "Kr"} <= set(segs)
+    starts = [E[0] for E, _ in segs.values()]
+    assert starts == sorted(starts)
+    E, adu = segs["Cu"]
+    cu = instrument_flux("Cu", dwell=2.0)
+    assert cu(E[10]) == pytest.approx(adu[10] / 2.0)
+    assert cu(E[-1] + 50) == 0                      # a single window has no flux outside it
+    sm = instrument_flux(dwell=2.0)                 # smoothed, full span
+    assert sm.covers(starts[0], segs["Kr"][0][-1] - 5)
+    for name, (E, adu) in segs.items():             # same order of magnitude as each window
+        assert 0.7 < np.median(sm(E)) / np.median(adu / 2.0) < 1.4, name
+    gap = 0.5 * (segs["Cu"][0][-1] + segs["Zn"][0][0])
+    assert sm(gap) > 0                              # gaps between windows are filled
